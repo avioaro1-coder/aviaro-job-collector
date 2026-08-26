@@ -7,27 +7,23 @@ const PILOT_SEARCH_URL =
 const SOURCE = "Emirates Group Careers";
 const SOURCE_TYPE = "Direct Airline";
 
+const ROLE_SLUGS = [
+  "direct-entry-captains",
+  "accelerated-command",
+  "first-officers",
+  "national-cadet-pilot-programme",
+];
+
 function cleanText(value: string | undefined | null): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
 }
 
 function fingerprint(job: {
-  external_job_id?: string;
+  external_job_id: string;
   external_url: string;
-  position: string;
-  location: string;
 }): string {
-  const base = [
-    job.external_job_id || "",
-    job.external_url,
-    job.position,
-    job.location,
-  ]
-    .join("|")
-    .toLowerCase()
-    .trim();
+  const base = `${job.external_job_id}|${job.external_url}`.toLowerCase();
 
-  // Simple deterministic fingerprint.
   let hash = 0;
 
   for (let i = 0; i < base.length; i++) {
@@ -48,46 +44,43 @@ async function fetchPage(url: string): Promise<string> {
 
   if (!response.ok) {
     throw new Error(
-      `Emirates request failed: ${response.status} ${response.statusText}`,
+      `Request failed: ${response.status} ${response.statusText}`,
     );
   }
 
   return response.text();
 }
 
-function extractPilotLinks(html: string): RawEmiratesJob[] {
+function roleUrl(slug: string): string {
+  return `https://www.emiratesgroupcareers.com/pilots/our-role-details/?name=${slug}`;
+}
+
+function extractRoleLinks(html: string): RawEmiratesJob[] {
   const $ = cheerio.load(html);
   const jobs: RawEmiratesJob[] = [];
 
-  $("a").each((_, element) => {
+  $("a[href]").each((_, element) => {
     const link = $(element);
-    const title = cleanText(link.text());
     const href = link.attr("href");
 
-    if (!href || !title) return;
-
-    const lowerTitle = title.toLowerCase();
-
-    // Only collect obvious pilot roles.
-    const isPilotRole =
-      lowerTitle.includes("pilot") ||
-      lowerTitle.includes("first officer") ||
-      lowerTitle.includes("captain") ||
-      lowerTitle.includes("accelerated command") ||
-      lowerTitle.includes("cadet");
-
-    if (!isPilotRole) return;
+    if (!href) return;
 
     const url = new URL(href, PILOT_SEARCH_URL).toString();
+
+    if (!url.includes("/pilots/our-role-details/")) return;
+
+    const title = cleanText(link.text());
+
+    if (!title) return;
 
     jobs.push({
       id: url,
       title,
       url,
+      location: "Dubai, United Arab Emirates",
     });
   });
 
-  // Remove duplicate links.
   const unique = new Map<string, RawEmiratesJob>();
 
   for (const job of jobs) {
@@ -97,75 +90,163 @@ function extractPilotLinks(html: string): RawEmiratesJob[] {
   return [...unique.values()];
 }
 
+function extractPageText($: cheerio.CheerioAPI): string {
+  return cleanText($("main").text());
+}
+
+function extractRequirements($: cheerio.CheerioAPI): string {
+  const requirements: string[] = [];
+
+  $("body")
+    .find("*")
+    .each((_, element) => {
+      const text = cleanText($(element).text());
+
+      if (
+        text.match(/valid ICAO ATPL/i) ||
+        text.match(/total flying time/i) ||
+        text.match(/minimum .* hours/i) ||
+        text.match(/ELP [45]/i) ||
+        text.match(/UAE passport/i) ||
+        text.match(/IELTS/i)
+      ) {
+        if (text.length < 500) {
+          requirements.push(text);
+        }
+      }
+    });
+
+  return [...new Set(requirements)].join(" | ");
+}
+
+function extractSalary(text: string): string {
+  const matches = text.match(
+    /(?:Annual pay & benefits|Annual take home cash|Monthly take home cash)[\s\S]{0,100}?AED\s?[\d,]+/gi,
+  );
+
+  if (!matches) return "";
+
+  return matches.map(cleanText).join(" | ");
+}
+
 function normalizeJob(
   raw: RawEmiratesJob,
-  description = "",
+  description: string,
+  requirements: string,
+  salary: string,
 ): NormalizedJob {
   const now = new Date().toISOString();
 
-  const normalized = {
+  return {
     company_name: "Emirates",
     position: cleanText(raw.title),
-    location: cleanText(raw.location),
-    region: "",
+    location: raw.location ?? "Dubai, United Arab Emirates",
+    region: "Middle East",
     aircraft: "",
-    contract_type: "",
-    employment_type: "",
-    salary: "",
+    contract_type: "Permanent",
+    employment_type: "Full-time",
+    salary,
     salary_min: null,
-    requirements: "",
+    requirements,
     preferred: "",
     closing_date: null,
     application_method: "External application",
     external_url: raw.url,
-    description: cleanText(description),
+    description,
     questions: "",
-    status: "active" as const,
+    status: "active",
     is_sample: false,
 
     source: SOURCE,
     source_url: raw.url,
-    source_type: SOURCE_TYPE as "Direct Airline",
+    source_type: SOURCE_TYPE,
     external_job_id: raw.id,
     job_fingerprint: fingerprint({
       external_job_id: raw.id,
       external_url: raw.url,
-      position: raw.title,
-      location: raw.location ?? "",
     }),
     first_seen: now,
     last_checked: now,
     last_changed: now,
   };
-
-  return normalized;
 }
 
 export async function collectEmiratesPilotJobs(): Promise<NormalizedJob[]> {
-  console.log(`Fetching Emirates pilot vacancies...`);
+  console.log("Fetching Emirates pilot vacancies...");
   console.log(`Source: ${PILOT_SEARCH_URL}`);
 
+  // First inspect the actual Emirates pilot search page.
   const searchHtml = await fetchPage(PILOT_SEARCH_URL);
 
-  const rawJobs = extractPilotLinks(searchHtml);
+  const discoveredJobs = extractRoleLinks(searchHtml);
 
-  console.log(`Found ${rawJobs.length} possible pilot vacancies.`);
+  console.log(
+    `Found ${discoveredJobs.length} role links directly on the search page.`,
+  );
+
+  // Emirates currently exposes these four pilot roles.
+  // We use the known public role pages as a fallback if the search page
+  // does not expose their links in the raw HTML.
+  const jobsToProcess =
+    discoveredJobs.length > 0
+      ? discoveredJobs
+      : ROLE_SLUGS.map((slug) => ({
+          id: roleUrl(slug),
+          title: slug,
+          url: roleUrl(slug),
+          location: "Dubai, United Arab Emirates",
+        }));
+
+  const uniqueJobs = new Map<string, RawEmiratesJob>();
+
+  for (const job of jobsToProcess) {
+    uniqueJobs.set(job.url, job);
+  }
+
+  console.log(`Processing ${uniqueJobs.size} Emirates pilot roles.`);
 
   const jobs: NormalizedJob[] = [];
 
-  for (const rawJob of rawJobs) {
+  for (const rawJob of uniqueJobs.values()) {
     try {
-      console.log(`Processing: ${rawJob.title}`);
+      console.log(`Processing: ${rawJob.url}`);
 
       const jobHtml = await fetchPage(rawJob.url);
       const $ = cheerio.load(jobHtml);
 
-      const description = cleanText($("main").text());
+      const pageText = extractPageText($);
 
-      jobs.push(normalizeJob(rawJob, description));
+      let position = rawJob.title;
+
+      if (pageText.match(/Enter a new career era/i)) {
+        position = "First Officer";
+      } else if (pageText.match(/Captain's seat/i)) {
+        position = "Direct Entry Captain";
+      } else if (pageText.match(/Ready for the next step/i)) {
+        position = "Accelerated Command";
+      } else if (pageText.match(/Become a world-class pilot/i)) {
+        position = "National Cadet Pilot Programme";
+      }
+
+      const normalizedRawJob = {
+        ...rawJob,
+        title: position,
+      };
+
+      const requirements = extractRequirements($);
+      const salary = extractSalary(pageText);
+
+      jobs.push(
+        normalizeJob(
+          normalizedRawJob,
+          pageText,
+          requirements,
+          salary,
+        ),
+      );
     } catch (error) {
       console.error(
-        `Failed to process ${rawJob.title}:`,
+        `Failed to process ${rawJob.url}:`,
         error instanceof Error ? error.message : error,
       );
     }
