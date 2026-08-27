@@ -1,4 +1,5 @@
 import { collectEmiratesPilotJobs } from "./collectors/emirates.js";
+import { syncJobsToBase44 } from "./base44.js";
 
 async function main() {
   try {
@@ -9,6 +10,7 @@ async function main() {
     console.log("==============================\n");
 
     console.log(JSON.stringify(jobs, null, 2));
+        await syncJobsToBase44(jobs);
   } catch (error) {
     console.error("Collector failed:");
 

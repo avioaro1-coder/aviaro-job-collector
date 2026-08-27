@@ -1,41 +1,30 @@
 import * as cheerio from "cheerio";
 import type { NormalizedJob, RawEmiratesJob } from "../types.js";
 
-const PILOT_SEARCH_URL =
+const SEARCH_URL =
   "https://www.emiratesgroupcareers.com/search-and-apply/?jobcategory=Pilots";
 
-const SOURCE = "Emirates Group Careers";
-const SOURCE_TYPE = "Direct Airline";
+const ROLE_URLS = [
+  {
+    title: "Direct Entry Captain",
+    url: "https://www.emiratesgroupcareers.com/pilots/our-role-details/?name=Direct-Entry-Captains",
+  },
+  {
+    title: "Accelerated Command",
+    url: "https://www.emiratesgroupcareers.com/pilots/our-role-details/?name=Accelerated-Command",
+  },
+  {
+    title: "First Officer",
+    url: "https://www.emiratesgroupcareers.com/pilots/our-role-details/?name=first-officers",
+  },
+  {
+    title: "National Cadet Pilot Programme",
+    url: "https://www.emiratesgroupcareers.com/pilots/our-role-details/?name=national-cadet-pilot-programme",
+  },
+];
 
 function cleanText(value: string | undefined | null): string {
   return (value ?? "").replace(/\s+/g, " ").trim();
-}
-
-function fingerprint(job: {
-  external_job_id?: string;
-  external_url: string;
-  position: string;
-  location: string;
-}): string {
-  const base = [
-    job.external_job_id || "",
-    job.external_url,
-    job.position,
-    job.location,
-  ]
-    .join("|")
-    .toLowerCase()
-    .trim();
-
-  // Simple deterministic fingerprint.
-  let hash = 0;
-
-  for (let i = 0; i < base.length; i++) {
-    hash = (hash << 5) - hash + base.charCodeAt(i);
-    hash |= 0;
-  }
-
-  return `emirates-${Math.abs(hash)}`;
 }
 
 async function fetchPage(url: string): Promise<string> {
@@ -47,125 +36,163 @@ async function fetchPage(url: string): Promise<string> {
   });
 
   if (!response.ok) {
-    throw new Error(
-      `Emirates request failed: ${response.status} ${response.statusText}`,
-    );
+    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
   }
 
   return response.text();
 }
 
-function extractPilotLinks(html: string): RawEmiratesJob[] {
-  const $ = cheerio.load(html);
-  const jobs: RawEmiratesJob[] = [];
+function makeFingerprint(url: string): string {
+  let hash = 0;
 
-  $("a").each((_, element) => {
-    const link = $(element);
-    const title = cleanText(link.text());
-    const href = link.attr("href");
-
-    if (!href || !title) return;
-
-    const lowerTitle = title.toLowerCase();
-
-    // Only collect obvious pilot roles.
-    const isPilotRole =
-      lowerTitle.includes("pilot") ||
-      lowerTitle.includes("first officer") ||
-      lowerTitle.includes("captain") ||
-      lowerTitle.includes("accelerated command") ||
-      lowerTitle.includes("cadet");
-
-    if (!isPilotRole) return;
-
-    const url = new URL(href, PILOT_SEARCH_URL).toString();
-
-    jobs.push({
-      id: url,
-      title,
-      url,
-    });
-  });
-
-  // Remove duplicate links.
-  const unique = new Map<string, RawEmiratesJob>();
-
-  for (const job of jobs) {
-    unique.set(job.url, job);
+  for (let i = 0; i < url.length; i++) {
+    hash = (hash << 5) - hash + url.charCodeAt(i);
+    hash |= 0;
   }
 
-  return [...unique.values()];
+  return `emirates-${Math.abs(hash)}`;
 }
 
-function normalizeJob(
-  raw: RawEmiratesJob,
-  description = "",
+function extractSection(text: string, start: string, end?: string): string {
+  const startIndex = text.toLowerCase().indexOf(start.toLowerCase());
+
+  if (startIndex === -1) return "";
+
+  const remaining = text.slice(startIndex + start.length);
+
+  if (!end) return cleanText(remaining);
+
+  const endIndex = remaining.toLowerCase().indexOf(end.toLowerCase());
+
+  return cleanText(
+    endIndex === -1 ? remaining : remaining.slice(0, endIndex),
+  );
+}
+
+function buildJob(
+  title: string,
+  url: string,
+  html: string,
 ): NormalizedJob {
+  const $ = cheerio.load(html);
+
+  const pageText = cleanText($("main").text() || $("body").text());
+
+  let requirements = "";
+
+  if (title === "First Officer") {
+    requirements = [
+      "ELP 4 or higher",
+      "Current Boeing or Airbus FBW experience",
+      "2000+ total flying time",
+      "Valid ICAO ATPL with unrestricted Class 1 medical",
+      "Minimum 150 hours in the past 12 months on type",
+    ].join("; ");
+  }
+
+  if (title === "Accelerated Command") {
+    requirements = [
+      "ELP 5 or higher",
+      "Pilot in Command Airbus FBW/Boeing experience",
+      "5000+ total flying time",
+      "Valid ICAO ATPL with unrestricted Class 1 medical",
+      "Minimum 150 hours in the past 12 months on type",
+    ].join("; ");
+  }
+
+  if (title === "National Cadet Pilot Programme") {
+    requirements = [
+      "6.0 IELTS score",
+      "18-26 years old",
+      "Minimum high school score of 80%",
+      "Minimum height of 160cm",
+      "Valid UAE passport and Khulasat Al Qaid",
+    ].join("; ");
+  }
+
+  if (title === "Direct Entry Captain") {
+    requirements = [
+      "Valid ICAO ATPL with unrestricted Class 1 medical",
+      "7000+ total flying time",
+      "Relevant Airbus FBW/Boeing experience",
+    ].join("; ");
+  }
+
   const now = new Date().toISOString();
 
-  const normalized = {
+  const raw: RawEmiratesJob = {
+    id: url,
+    title,
+    url,
+    location: "Dubai, United Arab Emirates",
+    description: pageText,
+  };
+
+  return {
     company_name: "Emirates",
-    position: cleanText(raw.title),
-    location: cleanText(raw.location),
-    region: "",
-    aircraft: "",
-    contract_type: "",
-    employment_type: "",
+    position: title,
+    location: "Dubai, United Arab Emirates",
+    region: "Middle East",
+    aircraft:
+      title === "First Officer" || title === "Accelerated Command"
+        ? "Airbus / Boeing"
+        : "",
+    contract_type: "Permanent",
+    employment_type: "Full-time",
     salary: "",
     salary_min: null,
-    requirements: "",
+    requirements,
     preferred: "",
     closing_date: null,
     application_method: "External application",
     external_url: raw.url,
-    description: cleanText(description),
+    description: pageText,
     questions: "",
-    status: "active" as const,
+    status: "active",
     is_sample: false,
 
-    source: SOURCE,
-    source_url: raw.url,
-    source_type: SOURCE_TYPE as "Direct Airline",
-    external_job_id: raw.id,
-    job_fingerprint: fingerprint({
-      external_job_id: raw.id,
-      external_url: raw.url,
-      position: raw.title,
-      location: raw.location ?? "",
-    }),
+    source: "Emirates Group Careers",
+    source_url: SEARCH_URL,
+    source_type: "Direct Airline",
+    external_job_id: url,
+    job_fingerprint: makeFingerprint(url),
     first_seen: now,
     last_checked: now,
     last_changed: now,
   };
-
-  return normalized;
 }
 
 export async function collectEmiratesPilotJobs(): Promise<NormalizedJob[]> {
-  console.log(`Fetching Emirates pilot vacancies...`);
-  console.log(`Source: ${PILOT_SEARCH_URL}`);
+  console.log("Fetching Emirates pilot vacancies...");
+  console.log(`Source: ${SEARCH_URL}`);
 
-  const searchHtml = await fetchPage(PILOT_SEARCH_URL);
+  // Verify the official search page is accessible.
+  const searchHtml = await fetchPage(SEARCH_URL);
 
-  const rawJobs = extractPilotLinks(searchHtml);
+  if (!searchHtml.toLowerCase().includes("direct entry captain")) {
+    console.warn(
+      "Warning: expected pilot roles were not found in the search-page HTML.",
+    );
+  }
 
-  console.log(`Found ${rawJobs.length} possible pilot vacancies.`);
+  console.log("Using the four official Emirates pilot role pages.");
 
   const jobs: NormalizedJob[] = [];
 
-  for (const rawJob of rawJobs) {
+  for (const role of ROLE_URLS) {
     try {
-      console.log(`Processing: ${rawJob.title}`);
+      console.log(`Processing: ${role.title}`);
 
-      const jobHtml = await fetchPage(rawJob.url);
-      const $ = cheerio.load(jobHtml);
+      const html = await fetchPage(role.url);
 
-      const description = cleanText($("main").text());
+      const job = buildJob(role.title, role.url, html);
 
-      jobs.push(normalizeJob(rawJob, description));
+      jobs.push(job);
+
+      console.log(`✓ ${role.title}`);
     } catch (error) {
       console.error(
-        `Failed to process ${rawJob.title}:`,
+        `✗ Failed: ${role.title}`,
         error instanceof Error ? error.message : error,
       );
     }

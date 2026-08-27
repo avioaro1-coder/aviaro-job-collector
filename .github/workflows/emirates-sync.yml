@@ -1,0 +1,26 @@
+name: Sync Emirates Jobs
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "0 */12 * * *"
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out code
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: Install dependencies
+        run: npm install
+
+      - name: Run Emirates collector and sync to Base44
+        env:
+          JOBS_SYNC_SECRET: ${{ secrets.JOBS_SYNC_SECRET }}
+        run: npm run collect:emirates
