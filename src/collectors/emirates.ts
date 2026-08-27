@@ -4,6 +4,8 @@ import type { NormalizedJob, RawEmiratesJob } from "../types.js";
 const SEARCH_URL =
   "https://www.emiratesgroupcareers.com/search-and-apply/?jobcategory=Pilots";
 
+const EMIRATES_COMPANY_ID = "6a900910c22ed4ee7e199dde";
+
 const ROLE_URLS = [
   {
     title: "Direct Entry Captain",
@@ -53,69 +55,45 @@ function makeFingerprint(url: string): string {
   return `emirates-${Math.abs(hash)}`;
 }
 
-function extractSection(text: string, start: string, end?: string): string {
-  const startIndex = text.toLowerCase().indexOf(start.toLowerCase());
-
-  if (startIndex === -1) return "";
-
-  const remaining = text.slice(startIndex + start.length);
-
-  if (!end) return cleanText(remaining);
-
-  const endIndex = remaining.toLowerCase().indexOf(end.toLowerCase());
-
-  return cleanText(
-    endIndex === -1 ? remaining : remaining.slice(0, endIndex),
-  );
-}
-
-function buildJob(
-  title: string,
-  url: string,
-  html: string,
-): NormalizedJob {
+function buildJob(title: string, url: string, html: string): NormalizedJob {
   const $ = cheerio.load(html);
 
   const pageText = cleanText($("main").text() || $("body").text());
 
-  let requirements = "";
+  let requirements: NormalizedJob["requirements"] = {};
 
   if (title === "First Officer") {
-    requirements = [
-      "ELP 4 or higher",
-      "Current Boeing or Airbus FBW experience",
-      "2000+ total flying time",
-      "Valid ICAO ATPL with unrestricted Class 1 medical",
-      "Minimum 150 hours in the past 12 months on type",
-    ].join("; ");
+    requirements = {
+      min_total_hours: 2000,
+      required_licence: "ICAO ATPL with unrestricted Class 1 medical",
+      required_type_rating: "Current Boeing or Airbus FBW experience",
+      experience_level: "first_officer",
+    };
   }
 
   if (title === "Accelerated Command") {
-    requirements = [
-      "ELP 5 or higher",
-      "Pilot in Command Airbus FBW/Boeing experience",
-      "5000+ total flying time",
-      "Valid ICAO ATPL with unrestricted Class 1 medical",
-      "Minimum 150 hours in the past 12 months on type",
-    ].join("; ");
+    requirements = {
+      min_total_hours: 5000,
+      required_licence: "ICAO ATPL with unrestricted Class 1 medical",
+      required_type_rating: "Pilot in Command Airbus FBW/Boeing experience",
+      experience_level: "captain",
+    };
   }
 
   if (title === "National Cadet Pilot Programme") {
-    requirements = [
-      "6.0 IELTS score",
-      "18-26 years old",
-      "Minimum high school score of 80%",
-      "Minimum height of 160cm",
-      "Valid UAE passport and Khulasat Al Qaid",
-    ].join("; ");
+    requirements = {
+      required_licence: "None (cadet entry programme)",
+      experience_level: "entry",
+    };
   }
 
   if (title === "Direct Entry Captain") {
-    requirements = [
-      "Valid ICAO ATPL with unrestricted Class 1 medical",
-      "7000+ total flying time",
-      "Relevant Airbus FBW/Boeing experience",
-    ].join("; ");
+    requirements = {
+      min_total_hours: 7000,
+      required_licence: "ICAO ATPL with unrestricted Class 1 medical",
+      required_type_rating: "Relevant Airbus FBW/Boeing experience",
+      experience_level: "captain",
+    };
   }
 
   const now = new Date().toISOString();
@@ -129,6 +107,7 @@ function buildJob(
   };
 
   return {
+    company_id: EMIRATES_COMPANY_ID,
     company_name: "Emirates",
     position: title,
     location: "Dubai, United Arab Emirates",
@@ -142,12 +121,12 @@ function buildJob(
     salary: "",
     salary_min: null,
     requirements,
-    preferred: "",
+    preferred: {},
     closing_date: null,
     application_method: "External application",
     external_url: raw.url,
     description: pageText,
-    questions: "",
+    questions: [],
     status: "active",
     is_sample: false,
 
